@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Yerel RAG Asistanı</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900">
+  <div class="mx-auto max-w-5xl px-4 py-8">
+    <!-- Header -->
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h1 class="text-2xl sm:text-3xl font-semibold tracking-tight">
+          Yerel RAG Asistanı
+        </h1>
+        <p class="text-slate-600 mt-1">
+          PDF’leri yükle, kaynaklara dayanarak cevap al. (Ollama + Gemma3:4b)
+        </p>
+      </div>
+      <div class="text-sm text-slate-500">
+        API: <span class="font-mono">/v1/ingest/pdf</span> · <span class="font-mono">/v1/query</span>
+      </div>
+    </div>
+
+    <!-- Cards -->
+    <div class="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- Upload -->
+      <div class="lg:col-span-1 rounded-2xl bg-white shadow-sm border border-slate-200 p-4">
+        <h2 class="font-semibold">Doküman Yükle</h2>
+        <p class="text-sm text-slate-600 mt-1">
+          PDF seçip yükleyin. Sistem otomatik indexler.
+        </p>
+
+        <div class="mt-4">
+          <label class="block text-sm font-medium mb-2">PDF Dosyası</label>
+          <input id="pdfFile" type="file" accept="application/pdf"
+                 class="block w-full text-sm file:mr-3 file:rounded-xl file:border-0
+                        file:bg-slate-900 file:text-white file:px-4 file:py-2
+                        hover:file:bg-slate-800
+                        rounded-xl border border-slate-200 p-2 bg-white" />
+        </div>
+
+        <button id="btnUpload"
+                class="mt-4 w-full rounded-xl bg-slate-900 text-white py-2.5 font-medium hover:bg-slate-800 disabled:opacity-50">
+          Yükle & Indexle
+        </button>
+
+        <div id="uploadStatus" class="mt-3 text-sm"></div>
+
+        <div class="mt-6">
+          <h3 class="text-sm font-semibold text-slate-700">Yüklenen Dokümanlar</h3>
+          <ul id="docList" class="mt-2 space-y-2 text-sm text-slate-700"></ul>
+        </div>
+      </div>
+
+      <!-- Chat -->
+      <div class="lg:col-span-2 rounded-2xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="font-semibold">Soru-Cevap</h2>
+          <div class="flex items-center gap-2">
+            <label class="text-sm text-slate-600">TopK</label>
+            <select id="topK"
+                    class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+              <option>3</option>
+              <option selected>5</option>
+              <option>8</option>
+              <option>10</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="chat"
+             class="mt-4 flex-1 overflow-auto rounded-2xl border border-slate-100 bg-slate-50 p-4 space-y-3">
+          <div class="text-sm text-slate-500">
+            Başlamak için bir PDF yükleyin, ardından soru sorun.
+          </div>
+        </div>
+
+        <div class="mt-4 flex gap-2">
+          <input id="question" type="text" placeholder="Örn: Bu dokümanda ana konu nedir?"
+                 class="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
+          <button id="btnAsk"
+                  class="rounded-xl bg-slate-900 text-white px-4 py-3 text-sm font-medium hover:bg-slate-800 disabled:opacity-50">
+            Sor
+          </button>
+        </div>
+
+        <div id="askStatus" class="mt-2 text-sm text-slate-600"></div>
+
+        <!-- Sources -->
+        <div class="mt-4">
+          <button id="toggleSources"
+                  class="text-sm font-medium text-slate-700 hover:text-slate-900">
+            Kaynakları Göster/Gizle
+          </button>
+          <div id="sources" class="mt-3 hidden space-y-2"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-8 text-xs text-slate-500">
+      Not: Bu arayüz yerel çalışır. Swagger dokümanı isterseniz <span class="font-mono">/docs</span>.
+    </div>
+  </div>
+
+  <script>
+    const chatEl = document.getElementById("chat");
+    const sourcesEl = document.getElementById("sources");
+    const uploadStatusEl = document.getElementById("uploadStatus");
+    const askStatusEl = document.getElementById("askStatus");
+    const docListEl = document.getElementById("docList");
+
+    let uploadedDocs = []; // basit liste (UI için)
+
+    function addBubble(text, who="assistant") {
+      const wrap = document.createElement("div");
+      wrap.className = "flex " + (who === "user" ? "justify-end" : "justify-start");
+
+      const bubble = document.createElement("div");
+      bubble.className =
+        (who === "user"
+          ? "max-w-[85%] rounded-2xl bg-slate-900 text-white px-4 py-3 text-sm shadow-sm"
+          : "max-w-[85%] rounded-2xl bg-white border border-slate-200 text-slate-900 px-4 py-3 text-sm shadow-sm");
+
+      bubble.textContent = text;
+      wrap.appendChild(bubble);
+      chatEl.appendChild(wrap);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    function setStatus(el, text, kind="info") {
+      const colors = {
+        info: "text-slate-600",
+        ok: "text-emerald-700",
+        err: "text-rose-700",
+      };
+      el.className = "text-sm " + (colors[kind] || colors.info);
+      el.textContent = text;
+    }
+
+    function renderDocs() {
+      docListEl.innerHTML = "";
+      uploadedDocs.slice().reverse().forEach(d => {
+        const li = document.createElement("li");
+        li.className = "rounded-xl border border-slate-200 bg-slate-50 px-3 py-2";
+        li.innerHTML = `<div class="font-medium">${escapeHtml(d.title)}</div>
+                        <div class="text-xs text-slate-500">document_id: ${d.id}</div>`;
+        docListEl.appendChild(li);
+      });
+    }
+
+    function escapeHtml(str) {
+      return (str || "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+    }
+
+    // Upload
+    document.getElementById("btnUpload").addEventListener("click", async () => {
+      const fileInput = document.getElementById("pdfFile");
+      const file = fileInput.files[0];
+      if (!file) {
+        setStatus(uploadStatusEl, "Lütfen bir PDF seçin.", "err");
+        return;
+      }
+
+      setStatus(uploadStatusEl, "Yükleniyor ve indexleniyor...", "info");
+
+      const fd = new FormData();
+      fd.append("file", file);
+
+      try {
+        const res = await fetch("/v1/ingest/pdf", { method: "POST", body: fd });
+        if (!res.ok) throw new Error("Upload failed: " + res.status);
+        const data = await res.json();
+        uploadedDocs.push({ id: data.document_id, title: file.name });
+        renderDocs();
+        setStatus(uploadStatusEl, `Yüklendi ✅ (document_id: ${data.document_id})`, "ok");
+      } catch (e) {
+        setStatus(uploadStatusEl, "Hata: " + e.message, "err");
+      }
+    });
+
+    // Ask
+    document.getElementById("btnAsk").addEventListener("click", async () => {
+      const qEl = document.getElementById("question");
+      const question = (qEl.value || "").trim();
+      const topK = parseInt(document.getElementById("topK").value, 10);
+
+      if (!question) return;
+
+      addBubble(question, "user");
+      qEl.value = "";
+      setStatus(askStatusEl, "Yanıt hazırlanıyor (LLM çalışıyor)...", "info");
+
+      sourcesEl.innerHTML = "";
+
+      try {
+        const res = await fetch("/v1/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question, top_k: topK })
+        });
+        
+        if (!res.ok) throw new Error("Query failed: " + res.status);
+        const data = await res.json();
+
+       addBubble(data.answer || "Cevap alınamadı.", "assistant");
+const src = data.provider === "api" ? "API" : (data.provider === "local" ? "Yerel" : "Kaynak yok");
+const mdl = data.model ? ` · ${data.model}` : "";
+setStatus(askStatusEl, `Tamamlandı ✅ · Yanıt Kaynağı: ${src}${mdl}`, "ok");
+
+        // sources
+        const citations = data.citations || [];
+        if (citations.length === 0) {
+          sourcesEl.innerHTML = `<div class="text-sm text-slate-500">Kaynak bulunamadı.</div>`;
+          return;
+        }
+
+        citations.forEach(c => {
+          const card = document.createElement("div");
+          card.className = "rounded-2xl border border-slate-200 bg-white p-3 shadow-sm";
+          card.innerHTML = `
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm font-semibold">[${c.n}] ${escapeHtml(c.title || "Doküman")}</div>
+                <div class="text-xs text-slate-500 mt-1">
+                  chunk: ${c.chunk_index} · score: ${typeof c.score === "number" ? c.score.toFixed(4) : "-"}
+                </div>
+              </div>
+            </div>`;
+          sourcesEl.appendChild(card);
+        });
+
+      } catch (e) {
+        setStatus(askStatusEl, "Hata: " + e.message, "err");
+        addBubble("Bir hata oluştu. Ollama açık mı ve gemma3:4b hazır mı kontrol edin.", "assistant");
+      }
+    });
+
+    // Toggle sources
+    document.getElementById("toggleSources").addEventListener("click", () => {
+      sourcesEl.classList.toggle("hidden");
+    });
+  </script>
+</body>
+</html>
