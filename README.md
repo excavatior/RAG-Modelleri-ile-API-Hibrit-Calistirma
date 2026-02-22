@@ -9,6 +9,9 @@ PDF’leri indexleyip (RAG) **yerel LLM** ile cevap üreten, gerektiğinde **API
 - Türkçe modern web arayüzü
 - Hibrit mod: `auto` / `local` / `api`
 
+  <img width="1453" height="808" alt="image" src="https://github.com/user-attachments/assets/3acd23f2-531a-4457-887a-989fe2a9f3b0" />
+
+
 ## Kurulum
 
 ### 1) Ollama + Model
